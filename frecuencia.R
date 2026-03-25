@@ -25,32 +25,77 @@ suppressPackageStartupMessages({
 #' Calcula y formatea una tabla de frecuencias absolutas y relativas.
 #'
 #' @description Toma un vector de datos, elimina los valores nulos (NA), 
-#' y construye un data.frame con las métricas estadísticas listas para visualizar.
+#' construye un data.frame con las métricas estadísticas y calcula las acumuladas.
+#' Permite elegir si ordenar por frecuencia o mantener el orden lógico original de las categorías.
 #'
-#' @param var Vector con los datos a analizar.
-#' @return Un data.frame ordenado por frecuencia relativa (ascendente).
+#' @param var Vector con los datos a analizar (puede ser categórico, numérico o factor).
+#' @param ordenar_fr Lógico. Si es TRUE (por defecto), ordena de menor a mayor frecuencia relativa.
+#' @return Un data.frame estadístico formateado con sus acumuladas.
 #' @export
-tabla_frecuencias <- function(var) {
+tabla_frecuencias <- function(var, ordenar_fr = TRUE) {
   var <- var[!is.na(var)]
   tabla <- table(var)
   df <- as.data.frame(tabla)
   colnames(df) <- c("Categoria", "Frecuencia")
 
+  # 1. Frecuencias simples
   total <- sum(df$Frecuencia)
   df$fr <- df$Frecuencia / total
   df$porcentaje <- df$fr * 100
+
+  # 2. Ordenamiento condicional (Acá salvamos los intervalos de las continuas)
+  if (ordenar_fr) {
+    df <- df[order(df$fr), ]
+  }
+
+  # 3. Las acumuladas
   df$Fi <- cumsum(df$Frecuencia)
   df$Fr <- cumsum(df$fr)
   df$porcentaje_acum <- cumsum(df$porcentaje)
 
-  df <- df[order(df$fr), ]
-
+  # 4. Formateo visual
   df$fr <- sprintf("%.4f", df$fr)
   df$porcentaje <- sprintf("%.2f%%", df$porcentaje)
   df$Fr <- sprintf("%.4f", df$Fr)
   df$porcentaje_acum <- sprintf("%.2f%%", df$porcentaje_acum)
 
   return(df)
+}
+
+#' Calcula métricas de dispersión y agrupa una variable continua.
+#'
+#' @description Toma un vector numérico continuo, calcula el Rango,
+#' la cantidad de intervalos usando la Regla de Sturges y la Amplitud.
+#' Luego, utiliza la función nativa cut() para agrupar los datos en esos intervalos.
+#'
+#' @param var Vector numérico con los datos continuos a procesar.
+#' @return Una lista que contiene las métricas (rango, k, amplitud) y 
+#' el vector de datos agrupados como un factor, listo para ser tabulado.
+#' @export
+procesar_continua <- function(var) {
+  var <- var[!is.na(var)]
+  
+  # 1. Rango (R)
+  val_max <- max(var)
+  val_min <- min(var)
+  rango <- val_max - val_min
+  
+  # 2. Cantidad de Intervalos / Clases (k) - Regla de Sturges
+  n <- length(var)
+  k <- ceiling(1 + 3.322 * log10(n))
+  
+  # 3. Amplitud (A)
+  amplitud <- rango / k
+  
+  # 4. Agrupar los datos
+  datos_agrupados <- cut(var, breaks = k, include.lowest = TRUE, right = FALSE)
+  
+  resultados <- list(
+    metricas = c(Rango = rango, Intervalos = k, Amplitud = amplitud),
+    vector_categorico = datos_agrupados
+  )
+  
+  return(resultados)
 }
 
 #' Lee un archivo de datos (.csv o .xlsx) y lo convierte en un data.frame puro.
@@ -158,16 +203,18 @@ option_list <- list(
               help="Ruta del archivo de datos (.csv o .xlsx)"),
   make_option(c("-v", "--var"), type="character", default=NULL, 
               help="Nombre de la variable a analizar"),
+  make_option(c("-t", "--tipo"), type="character", default="discreta", 
+              help="Tipo de variable: 'discreta' (por defecto) o 'continua'"),
   make_option(c("-g", "--graph"), type="character", default=NULL, 
               help="Gráficos opcionales separados por coma (ej: histograma,barras)")
 )
 
-opt_parser <- OptionParser(option_list=option_list, description="Analizador Estadístico y Generador de Gráficos")
+opt_parser <- OptionParser(option_list=option_list, description="Analizador Estadístico y Generador de Gráficos v1.1")
 opt <- parse_args(opt_parser)
 
 if (is.null(opt$base) || is.null(opt$var)) {
   cli::cli_alert_danger("Faltan argumentos obligatorios.")
-  cli::cli_text("Uso: {.code ./frecuencia.R -b datos.xlsx -v EDAD [-g histograma,barras]}")
+  cli::cli_text("Uso: {.code ./frecuencia.R -b datos.xlsx -v SALARIO -t continua [-g histograma]}")
   quit(status = 1)
 }
 
@@ -187,12 +234,35 @@ if (!(opt$var %in% colnames(data))) {
 
 vector_datos <- data[[opt$var]]
 
-# 1. Tabla de Frecuencias
-resultado <- tabla_frecuencias(vector_datos)
-
 cli::cli_h1("Análisis Estadístico")
-cli::cli_alert_info("Dataset: {.file {basename(opt$base)}} | Variable: {.var {opt$var}}")
+cli::cli_alert_info("Dataset: {.file {basename(opt$base)}} | Variable: {.var {opt$var}} | Tipo: {.val {opt$tipo}}")
 cat("\n")
+
+# Lógica de bifurcación según el tipo de variable
+es_continua <- tolower(opt$tipo) == "continua"
+
+if (es_continua) {
+  if (!is.numeric(vector_datos)) {
+    cli::cli_abort("La variable {.var {opt$var}} debe ser numérica para tratarla como continua.")
+  }
+  
+  res_continua <- procesar_continua(vector_datos)
+  vector_a_tabular <- res_continua$vector_categorico
+  
+  cli::cli_text(cli::col_green("Métricas calculadas:"))
+  cli::cli_bullets(c(
+    "*" = paste("Rango (R):", res_continua$metricas["Rango"]),
+    "*" = paste("Intervalos (k):", res_continua$metricas["Intervalos"]),
+    "*" = paste("Amplitud (A):", round(res_continua$metricas["Amplitud"], 4))
+  ))
+  cat("\n")
+} else {
+  vector_a_tabular <- vector_datos
+}
+
+# 1. Tabla de Frecuencias (le pasamos el booleano invertido: si es continua NO ordena por fr)
+resultado <- tabla_frecuencias(vector_a_tabular, ordenar_fr = !es_continua)
+
 cat(knitr::kable(resultado, format = "markdown", align = "c"), sep = "\n")
 cat("\n")
 cli::cli_alert_success("Cálculo finalizado exitosamente.")
